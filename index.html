@@ -204,6 +204,7 @@ textarea.input{resize:vertical; line-height:1.5;}
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 var firebaseConfig = {
   apiKey: "AIzaSyBF9oKiEfwSaprIcGpZ96gJJBOPck_Hmmw",
@@ -224,6 +225,15 @@ try{
 
   window.FLBackend.save = function(payload){
     return setDoc(ref, payload);
+  };
+
+  var storage = getStorage(fbApp);
+  window.FLBackend.uploadPortrait = function(npcId, blob){
+    var path = 'portraits/' + npcId + '-' + Date.now() + '.jpg';
+    var sRef = storageRef(storage, path);
+    return uploadBytes(sRef, blob, { contentType: 'image/jpeg' }).then(function(){
+      return getDownloadURL(sRef);
+    });
   };
 
   getDoc(ref).then(function(snap){
@@ -1059,7 +1069,10 @@ function renderMagicCard(talentsArr, canEdit, emptyHint){
   '</div>';
 }
 
-function readImageAsDataUrl(file, cb){
+/* Small inline thumbnail — safety-net fallback used only if Firebase Storage
+   upload isn't available, since this data URL ends up inside the single
+   Firestore state document, which is capped at ~1MB. */
+function makeSmallThumbDataUrl(file, cb){
   try{
     var reader = new FileReader();
     reader.onload = function(){
@@ -1085,6 +1098,74 @@ function readImageAsDataUrl(file, cb){
     reader.onerror = function(){ cb(null); };
     reader.readAsDataURL(file);
   }catch(e){ cb(null); }
+}
+
+function dataUrlToBlob(dataUrl){
+  var parts = dataUrl.split(',');
+  var mimeMatch = parts[0].match(/:(.*?);/);
+  var mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  var bstr = atob(parts[1]);
+  var n = bstr.length;
+  var u8 = new Uint8Array(n);
+  while(n--){ u8[n] = bstr.charCodeAt(n); }
+  return new Blob([u8], { type: mime });
+}
+
+/* High-quality resized copy, uploaded to Firebase Storage so the image
+   itself never has to fit inside the shared Firestore document. */
+function prepareHqImageBlob(file, cb){
+  try{
+    var reader = new FileReader();
+    reader.onload = function(){
+      try{
+        var img = new Image();
+        img.onload = function(){
+          try{
+            var maxDim = 1800;
+            var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+            var scale = Math.min(1, maxDim / Math.max(w, h));
+            var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+            var canvas = document.createElement('canvas');
+            canvas.width = cw; canvas.height = ch;
+            var ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, cw, ch);
+            if(canvas.toBlob){
+              canvas.toBlob(function(blob){ cb(blob || null); }, 'image/jpeg', 0.92);
+            }else{
+              cb(dataUrlToBlob(canvas.toDataURL('image/jpeg', 0.92)));
+            }
+          }catch(e){ cb(null); }
+        };
+        img.onerror = function(){ cb(null); };
+        img.src = reader.result;
+      }catch(e){ cb(null); }
+    };
+    reader.onerror = function(){ cb(null); };
+    reader.readAsDataURL(file);
+  }catch(e){ cb(null); }
+}
+
+function uploadPortraitForNpc(npcId, file){
+  function fallback(){
+    makeSmallThumbDataUrl(file, function(dataUrl){
+      var n = findNpc(npcId);
+      if(n && dataUrl) mutate(function(){ n.portrait = dataUrl; });
+    });
+  }
+  if(window.FLBackend && typeof window.FLBackend.uploadPortrait === 'function'){
+    prepareHqImageBlob(file, function(blob){
+      if(!blob){ fallback(); return; }
+      window.FLBackend.uploadPortrait(npcId, blob).then(function(url){
+        var n = findNpc(npcId);
+        if(n) mutate(function(){ n.portrait = url; });
+      }).catch(function(err){
+        console.warn('FL: portrait upload to Storage failed, using small fallback', err);
+        fallback();
+      });
+    });
+  }else{
+    fallback();
+  }
 }
 
 function avatarHtml(portrait, fallbackHtml, sizePx, extraStyle){
@@ -2444,11 +2525,8 @@ function bindEvents(app){
     if(el.type === 'file' && el.hasAttribute('data-portrait-target')){
       var pFile = el.files && el.files[0];
       if(!pFile) return;
-      readImageAsDataUrl(pFile, function(dataUrl){
-        if(!dataUrl) return;
-        var nPort = findNpc(STATE._selNpc);
-        if(nPort) mutate(function(){ nPort.portrait = dataUrl; });
-      });
+      var nPort = findNpc(STATE._selNpc);
+      if(nPort) uploadPortraitForNpc(nPort.id, pFile);
       return;
     }
     if(el.hasAttribute('data-wfield') && entity){
