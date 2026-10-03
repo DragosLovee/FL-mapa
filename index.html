@@ -197,6 +197,24 @@ textarea.input{resize:vertical; line-height:1.5;}
 
 .empty-note{font-size:11px; color:var(--dim); text-align:center; padding:10px 0;}
 
+/* ---- fullscreen map mode ---- */
+.map-wrap{cursor:grab;}
+.map-wrap.map-dragging{cursor:grabbing;}
+.map-wrap::-webkit-scrollbar{display:none;}
+.map-wrap{scrollbar-width:none;}
+body.map-full-mode{overflow:hidden;}
+body.map-full-mode .topbar,
+body.map-full-mode .navbar,
+body.map-full-mode .map-legend{display:none;}
+body.map-full-mode #app{position:fixed; inset:0; z-index:300; background:#120e0b;}
+body.map-full-mode .page.wide{max-width:none; padding:0; gap:0; height:100vh; height:100dvh;}
+body.map-full-mode .npc-map-layout{height:100vh; height:100dvh; gap:0;}
+body.map-full-mode .map-wrap{max-height:none; height:100vh; height:100dvh; border-radius:0; border:none;}
+body.map-full-mode .map-toolbar{position:fixed; left:10px; top:calc(10px + env(safe-area-inset-top,0)); z-index:320; background:rgba(18,14,11,0.95); padding:8px 10px; border-radius:10px; border:1px solid var(--border); max-width:calc(100vw - 150px); overflow-x:auto; flex-wrap:nowrap;}
+body.map-full-mode .npc-zoom-controls{position:fixed; right:10px; top:calc(10px + env(safe-area-inset-top,0)); z-index:320; background:rgba(18,14,11,0.95);}
+body.map-full-mode .npc-map-side{position:fixed; right:10px; bottom:calc(10px + env(safe-area-inset-bottom,0)); top:auto; width:min(320px, calc(100vw - 20px)); max-height:60vh; overflow-y:auto; z-index:320; background:rgba(18,14,11,0.97); border:1px solid var(--border); border-radius:12px; padding:10px; box-shadow:0 10px 30px rgba(0,0,0,0.6);}
+.map-fullscreen-exit{position:fixed; left:10px; bottom:calc(10px + env(safe-area-inset-bottom,0)); z-index:320; background:rgba(18,14,11,0.95); border:1px solid var(--border); border-radius:999px; padding:8px 14px; font-size:12px; color:var(--text); display:none; align-items:center; gap:6px;}
+body.map-full-mode .map-fullscreen-exit{display:flex;}
 
 </style>
 <div id="app"></div>
@@ -1254,6 +1272,7 @@ var listStatus = 'all';
 var pendingDeleteNpc = null;
 var mapZoom = 1;
 var mapMoveMode = false;
+var mapFullscreen = false;
 var travelNoteOpen = false;
 var pendingDeletePoi = false;
 
@@ -2049,6 +2068,34 @@ function bindZoomGestures(el, getZoom, setZoom){
   }, { passive:false });
 }
 
+/* mouse drag-to-pan for the map (touch already pans via native scrolling) */
+function bindMapPan(el){
+  if(el._flPanBound) return;
+  el._flPanBound = true;
+  var dragging = false, moved = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+  el.addEventListener('mousedown', function(e){
+    if(e.button !== 0) return;
+    if(e.target.closest('.poi-pin')) return;
+    dragging = true; moved = false;
+    startX = e.clientX; startY = e.clientY;
+    startLeft = el.scrollLeft; startTop = el.scrollTop;
+    el.classList.add('map-dragging');
+  });
+  window.addEventListener('mousemove', function(e){
+    if(!dragging) return;
+    var dx = e.clientX - startX, dy = e.clientY - startY;
+    if(Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+    el.scrollLeft = startLeft - dx;
+    el.scrollTop = startTop - dy;
+  });
+  function endDrag(){
+    if(dragging && moved) el._flJustPanned = true;
+    dragging = false;
+    el.classList.remove('map-dragging');
+  }
+  window.addEventListener('mouseup', endDrag);
+}
+
 /* ---------------- events ---------------- */
 
 function renderMapZoomControls(){
@@ -2058,7 +2105,11 @@ function renderMapZoomControls(){
       '<span>'+Math.round(mapZoom*100)+'%</span>' +
       '<button type="button" class="icon-btn" data-action="map-zoom-in" aria-label="Увеличить">+</button>' +
       (mapZoom!==1 ? '<button type="button" class="link-btn" data-action="map-zoom-reset">сброс</button>' : '') +
+      '<button type="button" class="icon-btn" data-action="map-fullscreen-toggle" aria-label="'+(mapFullscreen?'Свернуть':'На весь экран')+'">'+(mapFullscreen?'&times;':'&#9974;')+'</button>' +
     '</div>';
+}
+function mapFullscreenExitHtml(){
+  return '<button type="button" class="map-fullscreen-exit" data-action="map-fullscreen-toggle">'+iconBack()+' Свернуть карту</button>';
 }
 
 
@@ -2112,11 +2163,13 @@ function renderMapGm(){
       '<span class="hint" style="margin:0;">поворот сетки ('+Math.round(m.rotation||0)+'&deg;)</span>' +
       '<button type="button" class="icon-btn" data-action="hex-rotate-ccw" aria-label="Повернуть влево">&#8634;</button>' +
       '<button type="button" class="icon-btn" data-action="hex-rotate-cw" aria-label="Повернуть вправо">&#8635;</button>' +
+      '<button type="button" class="link-btn" data-action="hex-rotate-90">+90&deg;</button>' +
     '</div>';
 
   return '' +
     renderTopBar({ title:'КАРТА ЗАПРЕТНЫХ ЗЕМЕЛЬ', subline:'полный редактор — видно только мастеру' }) +
     '<div class="page wide" style="flex:1 1 auto;min-height:420px;">' +
+      mapFullscreenExitHtml() +
       '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">' + calControls + renderMapZoomControls() + '</div>' +
       '<div class="npc-map-layout">' +
         '<div class="map-wrap" id="fl-map-canvas">' +
@@ -2197,6 +2250,7 @@ function renderMapPlayer(){
   return '' +
     renderTopBar({ title:'КАРТА ЗАПРЕТНЫХ ЗЕМЕЛЬ' }) +
     '<div class="page wide" style="flex:1 1 auto;min-height:420px;">' +
+      mapFullscreenExitHtml() +
       '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">' +
         '<div class="hint" style="margin:0;">Кликайте по гексам, чтобы проложить маршрут партии.</div>' + renderMapZoomControls() +
       '</div>' +
@@ -2241,6 +2295,7 @@ function bindEvents(app){
     if(action==='map-zoom-in'){ mapZoom = clampZoom(mapZoom + 0.2); render(); return; }
     if(action==='map-zoom-out'){ mapZoom = clampZoom(mapZoom - 0.2); render(); return; }
     if(action==='map-zoom-reset'){ mapZoom = 1; render(); return; }
+    if(action==='map-fullscreen-toggle'){ mapFullscreen = !mapFullscreen; render(); return; }
     if(action==='add-poi-note'){
       var mNote = ensureMapState();
       var pNote = mNote.pois.find(function(x){return x.id===STATE._selPoi;});
@@ -2320,6 +2375,11 @@ function bindEvents(app){
     if(action==='hex-rotate-cw'){
       var mRotR = ensureMapState();
       mutate(function(){ mRotR.rotation = Math.round((((mRotR.rotation||0) + 3) % 360 + 360) % 360 * 10) / 10; });
+      return;
+    }
+    if(action==='hex-rotate-90'){
+      var mRot90 = ensureMapState();
+      mutate(function(){ mRot90.rotation = ((Math.round((mRot90.rotation||0)/90)*90 + 90) % 360 + 360) % 360; });
       return;
     }
     if(action==='toggle-poi-visible'){
@@ -2662,7 +2722,9 @@ function bindEvents(app){
       if(mInnerEl) mInnerEl.style.transform = 'scale('+mapZoom+')';
       scheduleZoomRender();
     });
+    bindMapPan(mapCanvas);
     mapCanvas.addEventListener('click', function(e){
+      if(mapCanvas._flJustPanned){ mapCanvas._flJustPanned = false; return; }
       var m = ensureMapState();
       var pinEl = e.target.closest('.poi-pin');
       if(pinEl){
@@ -2775,6 +2837,8 @@ function render(){
     bindEvents(app);
     return;
   }
+  if(route.name !== 'map') mapFullscreen = false;
+  try{ document.body.classList.toggle('map-full-mode', route.name==='map' && mapFullscreen); }catch(e){}
   var html;
   switch(route.name){
     case 'whoami': html = renderWhoAmI(); break;
