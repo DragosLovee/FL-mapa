@@ -323,7 +323,7 @@ var MAP_POI_TYPES = {
 };
 
 function ensureMapState(){
-  if(!STATE.map) STATE.map = { hexSize:46, offsetX:60, offsetY:55, rotation:0, showGrid:true, pois:[], route:[] };
+  if(!STATE.map) STATE.map = { hexSize:14.4, offsetX:44.01, offsetY:67.3, rotation:-3, showGrid:true, pois:[], route:[] };
   if(typeof STATE.map.rotation !== 'number') STATE.map.rotation = 0;
   return STATE.map;
 }
@@ -2164,6 +2164,7 @@ function renderMapGm(){
       '<button type="button" class="icon-btn" data-action="hex-rotate-ccw" aria-label="Повернуть влево">&#8634;</button>' +
       '<button type="button" class="icon-btn" data-action="hex-rotate-cw" aria-label="Повернуть вправо">&#8635;</button>' +
       '<button type="button" class="link-btn" data-action="hex-rotate-90">+90&deg;</button>' +
+      '<button type="button" class="link-btn" data-action="hex-calibrate-art" style="color:var(--gold);">подогнать под рисунок карты</button>' +
     '</div>';
 
   return '' +
@@ -2380,6 +2381,18 @@ function bindEvents(app){
     if(action==='hex-rotate-90'){
       var mRot90 = ensureMapState();
       mutate(function(){ mRot90.rotation = ((Math.round((mRot90.rotation||0)/90)*90 + 90) % 360 + 360) % 360; });
+      return;
+    }
+    if(action==='hex-calibrate-art'){
+      /* matches the hex grid actually printed on the map artwork, measured against
+         its own row-number ruler — size was roughly 2x too large before this */
+      var mCal = ensureMapState();
+      mutate(function(){
+        mCal.hexSize = 14.4;
+        mCal.offsetX = 44.01;
+        mCal.offsetY = 67.3;
+        mCal.rotation = -3;
+      });
       return;
     }
     if(action==='toggle-poi-visible'){
